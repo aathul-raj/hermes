@@ -6,8 +6,20 @@ import * as dotenv from 'dotenv';
 import * as path from 'path';
 import twilio from 'twilio';
 import next from 'next';
+import OpenAI from 'openai';
+import { z } from "zod";
+import { zodResponseFormat } from "openai/helpers/zod";
+import { PrismaClient } from '@prisma/client';
+
+const prisma = new PrismaClient();
 
 dotenv.config({ path: path.join(__dirname, '.env.local') });
+
+const CallAnalysisSchema = z.object({
+  sentiment: z.enum(["positive", "neutral", "negative"]),
+  summary: z.string(),
+  tag: z.string(),
+});
 
 const {
   TWILIO_ACCOUNT_SID,
@@ -31,15 +43,23 @@ if (
   process.exit(1);
 }
 
+const openai = new OpenAI({
+  apiKey: OPENAI_API_KEY,
+});
+
 const DOMAIN = rawDomain.replace(/(^\w+:|^)\/\//, '').replace(/\/+$/, '');
 const PORT = parseInt(rawPort || '3000', 10);
 
 let lastFlowDefinition: FlowDefinition | null = null;
+let currentSpeaker = 'Assistant';
 
 interface CallInfo {
   flowDefinition: FlowDefinition;
+  callLogId: number;  // Add this
   summary?: string;
+  transcript?: string;
   isComplete?: boolean;
+  callEndTime?: Date;
 }
 const callsData = new Map<string, CallInfo>();
 
@@ -50,27 +70,33 @@ interface FlowDefinition {
   ending: string;
   questions: string[];
   businessInfo: string;
+  callLogId: number;  // Add this
 }
 
 function buildSystemMessage(flow: FlowDefinition): string {
   return `
-    You are a helpful, positive AI phone agent representing a business. Use the following info if needed, about the business:
-    ${flow.businessInfo}.
+    You are a helpful, positive AI phone agent representing a business on a phone call with a customer. Your goal is to assist customers effectively while staying polite, empathetic, and engaging. Here is the context of your role:
+    - **Business Overview**: ${flow.businessInfo}.
+    - **Call Purpose**: ${flow.topic}.
+    - **Mandatory Flow**:
+    1. Start by warmly greeting the customer with: "${flow.greeting}". Introduce yourself as an AI helper for the company. Wait for the user to respond before moving on. DO NOT SAY ANYTHING ELSE UNTIL THE USER HAS RESPONSED TO THIS.
+    2. Ask the following required questions in order, one at a time. Let the user respond to each question before asking the next: ${flow.questions.join('; ')}
+    3. Conclude the call with:  "${flow.ending}"
 
-    The conversation you will be having with the user is about: ${flow.topic}.
-    You MUST greet the user by saying: "${flow.greeting}"
+    Before asking a question, use a transition to make the customer feel comfortable. Example:
+    - "I’d like to ask a few quick questions to ensure we’re on the same page."
+    - "This next question will help us serve you better."
 
-    Then at some point, please ask:
-      ${flow.questions.join('; ')}
+    Be flexible in tone but stay focused on the call objectives.
+    Address the customer by name ONLY IF YOU KNOW THEIR NAME during the conversation to make the interaction more personal.
 
-    Make SURE you ask every single one of those questions. Do not skip a single one.
-    Finally, end the call with: "${flow.ending}"
-
-    Be polite, helpful, and keep the user engaged. Do not sound too much like a robot.
-    If the user asks questions, answer them accurately to the best of your abilities. If they ask a question that you do not know 
-    the answer to, explicitly say that you do not know and that they should contact the business directly for more information.
-    Use your knowledge cutoff and do the best job you can. Do not let the user distract you from the main goals of this conversation.
-    If they attempt to change the topic of conversation or ask unrelated questions, politely steer the conversation back to the main topic.
+    ### Key Rules:
+    1. **Tone**: Always remain friendly, empathetic, and conversational. Speak in a natural, human-like manner, avoiding overly robotic phrasing.
+    2. **User Guidance**: If the customer asks unrelated questions, politely redirect the conversation back to the main topic. If you cannot answer, apologize and recommend contacting the business for details.
+    3. **Customer Experience**: Recognize user frustration or happiness through their tone and adjust your responses to match their mood. Always start with a warm, inviting tone. If the customer is known (based on name or history), acknowledge them by name.
+    4. **Transparency**: If unsure of something, clearly state: "I’m not sure about that, but the business can assist you further."
+    5. **Efficiency**: Ensure all required questions are answered while maintaining conversational flow. Don’t skip questions, even if the customer seems ready to end the call.
+    6. **Flagging**: If the user says they want to speak to a human,  inform them that you will transfer them to a human representative to reach back to you. Then, end the call.
   `;
 }
 
@@ -115,23 +141,23 @@ async function isNumberAllowed(to: string): Promise<boolean> {
 }
 
 /** Actually place the outbound call */
-async function makeCall(to: string): Promise<string|undefined> {
+async function makeCall(to: string): Promise<string | undefined> {
   try {
-    const allowed = await isNumberAllowed(to);
-    if (!allowed) {
-      console.warn(`Number ${to} is not recognized or not allowed to be called.`);
-      return undefined;
-    }
-    const call = await twilioClient.calls.create({
-      from: PHONE_NUMBER_FROM,
-      to,
-      twiml: outboundTwiML
-    });
-    console.log('Call started. SID =', call.sid);
-    return call.sid;
+      const allowed = await isNumberAllowed(to);
+      if (!allowed) {
+          console.warn(`Number ${to} is not recognized or not allowed to be called.`);
+          return undefined;
+      }
+      const call = await twilioClient.calls.create({
+          from: PHONE_NUMBER_FROM,
+          to,
+          twiml: outboundTwiML,
+      });
+      console.log('Call started. SID =', call.sid);
+      return call.sid;
   } catch (err) {
-    console.error('Error making call:', err);
-    return undefined;
+      console.error('Error making call:', err);
+      return undefined;
   }
 }
 
@@ -150,25 +176,42 @@ async function buildApp() {
    * POST /api/outbound-call
    * Accept a FlowDefinition from the user, place the call, store instructions
    */
-  fastify.post('/api/outbound-call', async (req: FastifyRequest<{ Body: FlowDefinition }>, reply: FastifyReply) => {
+  fastify.post('/api/outbound-call', async (req, reply) => {
     const flow = req.body;
-    if (!flow?.toPhone) {
-      return reply.status(400).send({ error: 'Missing "toPhone" in request' });
+    if (!flow?.toPhone || !flow?.callLogId) {
+        return reply.status(400).send({ error: 'Missing required fields in request' });
     }
 
     const sid = await makeCall(flow.toPhone);
     if (!sid) {
-      return reply.status(400).send({ error: `Unable to call ${flow.toPhone}` });
+        console.warn(`Failed to start call to ${flow.toPhone}. Updating database...`);
+        await prisma.callLog.update({
+            where: { id: flow.callLogId },
+            data: { 
+                status: 'error', 
+                summary: 'Failed to initiate call',
+            },
+        });
+        return reply.status(400).send({ error: `Unable to call ${flow.toPhone}` });
     }
 
     lastFlowDefinition = flow;
 
-    // Also store it in a map keyed by sid for final summary
-    callsData.set(sid, { flowDefinition: flow });
-    console.log(`Stored FlowDefinition for callSid = ${sid}`);
+    await prisma.callLog.update({
+        where: { id: flow.callLogId },
+        data: {
+            startTime: new Date(),
+            status: 'in-progress',
+        },
+    });
+
+    callsData.set(sid, { 
+        flowDefinition: flow, 
+        callLogId: flow.callLogId,
+    });
 
     return reply.status(200).send({ callSid: sid });
-  });
+});
 
   /**
    * GET /api/call-summary?callSid=xxx
@@ -183,8 +226,12 @@ async function buildApp() {
     if (!info) {
       return reply.status(404).send({ error: 'No info found for that callSid' });
     }
+    
+    console.log('Sending transcript for callSid:', callSid);
+    console.log('Transcript content:', info.transcript);
+    
     return reply.status(200).send({
-      summary: info.summary || null,
+      transcript: info.transcript || null,
       isComplete: info.isComplete || false
     });
   });
@@ -195,191 +242,552 @@ async function buildApp() {
    * A real-time conversation that uses VAD for back-and-forth.
    */
   fastify.register(async (fInstance) => {
-    fInstance.get('/media-stream', { websocket: true }, (connection, req) => {
-      console.log('[Twilio] media-stream connected');
-
-      // We'll discover callSid from "start" event
-      let callSid: string | undefined;
-      let openAiWs: WebSocket | null = null;
-      let streamSid: string | null = null;
-      let conversationTextLog = '';
-
-      // 1) Connect to OpenAI Realtime
-      openAiWs = new WebSocket('wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-10-01', {
-        headers: {
-          Authorization: `Bearer ${OPENAI_API_KEY}`,
-          'OpenAI-Beta': 'realtime=v1'
-        }
-      });
-
-      // 2) Once the OpenAI WS is open, set up the session
-      openAiWs.on('open', () => {
-        console.log('[OpenAI] WS connected');
-        if (!lastFlowDefinition) {
-          console.warn('No FlowDefinition found, the AI might not have instructions...');
-        }
-
-        // We enable turn detection, let the user speak, and we use openai STT
-        // so the AI sees the user's words as conversation items. The AI
-        // automatically produces a new response after the user finishes speaking.
-        const sessionUpdate = {
-          type: 'session.update',
-          session: {
-            // Enable server-based VAD so we get user turns
-            turn_detection: {
-              type: 'server_vad',
-              threshold: 0.5,
-              prefix_padding_ms: 300,
-              silence_duration_ms: 2000,
-              create_response: true,
-            },
-            input_audio_format: 'g711_ulaw',
-            output_audio_format: 'g711_ulaw',
-            input_audio_transcription: { model: 'whisper-1' },
-            voice: 'alloy',
-            instructions: lastFlowDefinition ? buildSystemMessage(lastFlowDefinition) : 'No instructions found...',
-            modalities: ['text', 'audio'],
-            temperature: 0.7
+    fInstance.get("/media-stream", { websocket: true }, (connection, req) => {
+      console.log("[Twilio] media-stream connected");
+  
+      let callSid;
+      let openAiWs = null;
+      let streamSid = null;
+      let conversationTextLog = "";
+  
+      // OpenAI WebSocket connection
+      openAiWs = new WebSocket(
+        "wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-10-01",
+        {
+          headers: {
+            Authorization: `Bearer ${OPENAI_API_KEY}`,
+            "OpenAI-Beta": "realtime=v1"
           }
-        };
-        openAiWs!.send(JSON.stringify(sessionUpdate));
-
-        if (lastFlowDefinition?.greeting) {
-          const greeting = lastFlowDefinition.greeting;
-          const greetingMsg = {
-            type: 'conversation.item.create',
-            item: {
-              type: 'message',
-              role: 'assistant',
-              content: [{ type: 'text', text: greeting }]
-            }
-          };
-          openAiWs!.send(JSON.stringify(greetingMsg));
-          openAiWs!.send(JSON.stringify({ type: 'response.create' }));
         }
+      );
+  
+      openAiWs.on("open", () => {
+        console.log("[OpenAI] WS connected");
+        if (!lastFlowDefinition) {
+          console.warn("No FlowDefinition found, the AI might not have instructions...");
+        }
+  
+        setTimeout(() => {
+          const sessionUpdate = {
+            type: "session.update",
+            session: {
+              turn_detection: {
+                type: "server_vad",
+                threshold: 0.8,
+                prefix_padding_ms: 0,
+                silence_duration_ms: 2000,
+                create_response: true,
+              },
+              input_audio_format: "g711_ulaw",
+              output_audio_format: "g711_ulaw",
+              input_audio_transcription: { model: "whisper-1" },
+              voice: "alloy",
+              instructions: lastFlowDefinition
+                ? buildSystemMessage(lastFlowDefinition)
+                : "No instructions found...",
+              modalities: ["text", "audio"],
+              temperature: 0.6,
+            },
+          };
+    
+          openAiWs.send(JSON.stringify(sessionUpdate));
+          console.log("[OpenAI] Session update sent after 1-second delay.");
+        }, 1000);
       });
-
-      // 3) Listen for messages from OpenAI
-      openAiWs.on('message', (raw) => {
+  
+      openAiWs.on("message", (raw) => {
         try {
           const response = JSON.parse(raw.toString());
+      
           if (LOG_EVENT_TYPES.includes(response.type)) {
             console.log(`[OpenAI] ${response.type}`, response);
           }
-          if (response.type === 'input_audio_buffer.speech_started') {
-            console.log('[OpenAI] The user started talking => cancel AI speech');
-            // 1) Send "response.cancel" to OpenAI
-            const interruptMessage = { type: 'response.cancel' };
-            openAiWs!.send(JSON.stringify(interruptMessage));
 
-            // 2) Send "clear" event to Twilio so it stops playing the half-said AI response
+          if (response.type === "input_audio_buffer.speech_started") {
+            console.log("[OpenAI] User started speaking, interrupting AI response...");
+      
+            // Clear Twilio buffer
             const clearTwilio = {
-              event: 'clear', // Not an official Twilio event, but we can handle it
-              streamSid: streamSid
+              streamSid,
+              event: "clear", // Clear Twilio's buffer
             };
             connection.send(JSON.stringify(clearTwilio));
-            console.log('[OpenAI] Sent response.cancel, told Twilio to "clear" buffer');
+      
+            // Cancel current AI response
+            const interruptMessage = {
+              type: "response.cancel", // Stop AI response
+            };
+            isResponding = false;
+            openAiWs.send(JSON.stringify(interruptMessage));
+            console.log("[OpenAI] AI response canceled.");
+
+            openAiWs.send(JSON.stringify({ type: "response.create" }));
+            console.log("[OpenAI] Ready for next input.");
           }
-          // If the AI is sending audio, forward to Twilio
-          if (response.type === 'response.audio.delta' && response.delta) {
+      
+          // Update log for user input transcription
+          if (response.type === "conversation.item.input_audio_transcription.completed" && response.transcript) {
+            conversationTextLog += `User: ${response.transcript.trim()}\n`;
+            if (callSid && callsData.has(callSid)) {
+              const info = callsData.get(callSid);
+              info.transcript = conversationTextLog.trim();
+              callsData.set(callSid, info);
+            }
+          }
+      
+          // Update log for assistant responses
+          if (response.type === "response.audio_transcript.done" && response.transcript) {
+            conversationTextLog += `Assistant: ${response.transcript.trim()}\n`;
+            if (callSid && callsData.has(callSid)) {
+              const info = callsData.get(callSid);
+              info.transcript = conversationTextLog.trim();
+              callsData.set(callSid, info);
+      
+              // Update transcript in database but don't mark as complete
+              const updateTranscript = async () => {
+                try {
+                  await prisma.callLog.update({
+                    where: { id: info.callLogId },
+                    data: {
+                      transcript: conversationTextLog.trim()
+                    }
+                  });
+                } catch (err) {
+                  console.error("Error updating transcript:", err);
+                }
+              };
+              updateTranscript();
+            }
+          }
+      
+          // Stream audio to Twilio if provided
+          if (response.type === "response.audio.delta" && response.delta) {
             const audioDelta = {
-              event: 'media',
+              event: "media",
               streamSid,
-              media: { payload: Buffer.from(response.delta, 'base64').toString('base64') }
+              media: { payload: Buffer.from(response.delta, "base64").toString("base64") }
             };
             connection.send(JSON.stringify(audioDelta));
           }
-
-          // Collect textual output for summary
-          if (response.type === 'response.text' && response.text) {
-            conversationTextLog += response.text + '\n';
-          }
-
-          // If the AI finishes a response, near the end of call we do a summary request
-          if (response.type === 'response.done') {
-            // Possibly ask for a short summary. Or do it on call end. 
-            // We'll do it now:
-            // const summaryReq = {
-            //   type: 'conversation.item.create',
-            //   item: {
-            //     type: 'message',
-            //     role: 'user',
-            //     content: [
-            //       { type: 'input_text', text: 'Give me a quick bullet summary of the conversation so far.' }
-            //     ]
-            //   }
-            // };
-            // openAiWs?.send(JSON.stringify(summaryReq));
-            // openAiWs?.send(JSON.stringify({ type: 'response.create' }));
-          }
-
-          // If the AI returns more text after the summary request
-          if (response.type === 'response.text.done') {
-            const finalSummary = conversationTextLog.trim();
-            if (callSid && callsData.has(callSid)) {
-              const info = callsData.get(callSid)!;
-              info.summary = finalSummary;
-              info.isComplete = true;
-              callsData.set(callSid, info);
-            }
-            console.log('[OpenAI] Final summary:\n', finalSummary);
-          }
         } catch (err) {
-          console.error('[OpenAI] Error on message:', err);
+          console.error("[OpenAI] Error processing message:", err);
         }
       });
-
-      openAiWs.on('error', (err) => console.error('[OpenAI] WS error:', err));
-      openAiWs.on('close', () => console.log('[OpenAI] WS closed'));
-
-      //
-      // 4) Handle Twilio -> Our server messages
-      //
-      connection.on('message', (msg) => {
+      let isCallComplete = false;
+      connection.on("message", (msg) => {
         try {
           const data = JSON.parse(msg.toString());
-
+  
           switch (data.event) {
-            case 'connected':
-              console.log('[Twilio WS] connected');
-              break;
-
-            case 'start':
+            case "start":
               streamSid = data.start.streamSid;
-              console.log(`[Twilio WS] Stream started, SID = ${streamSid}`);
               callSid = data.start.callSid;
-              console.log('[Twilio WS] callSid =', callSid);
+              console.log("[Twilio WS] Stream started with callSid:", callSid);
               break;
-
-            case 'media':
-              // Forward user audio to OpenAI
+  
+            case "media":
               if (openAiWs && openAiWs.readyState === WebSocket.OPEN) {
                 const audioAppend = {
-                  type: 'input_audio_buffer.append',
+                  type: "input_audio_buffer.append",
                   audio: data.media.payload
                 };
                 openAiWs.send(JSON.stringify(audioAppend));
               }
               break;
-
-            case 'stop':
-              console.log('[Twilio WS] stop => call ended?');
-              break;
-
+  
+              case "stop":
+                console.log("[Twilio WS] Stream stopped.");
+                isCallComplete = true;
+                if (callSid && callsData.has(callSid)) {
+                  const info = callsData.get(callSid);
+                  info.isComplete = true;
+                  
+                  const updateCallLog = async () => {
+                    try {
+                      await prisma.callLog.update({
+                        where: { id: info.callLogId },
+                        data: {
+                          status: "completed",
+                          transcript: conversationTextLog.trim(),
+                          endTime: new Date()  // Add end time when call completes
+                        }
+                      });
+                    } catch (err) {
+                      console.error("Error updating call log on completion:", err);
+                    }
+                  };
+                  updateCallLog();
+                }
+                break;
+  
             default:
-              console.log('[Twilio WS] Non-media event:', data.event);
+              console.log("[Twilio WS] Unhandled event:", data.event);
           }
         } catch (err) {
-          console.error('[Twilio WS] Error parsing message:', err);
+          console.error("[Twilio WS] Error processing message:", err);
         }
       });
-
-      // Close
-      connection.on('close', () => {
-        console.log('[Twilio WS] Connection closed');
+  
+      connection.on("close", () => {
+        console.log("[Twilio WS] Connection closed");
         openAiWs?.close();
       });
     });
+  });
+  
+  /**
+   * POST /api/analyze-call
+   * Analyze a transcript using OpenAI API.
+   */
+  
+fastify.post('/api/analyze-call', async (req: FastifyRequest<{ Body: { transcript: string } }>, reply: FastifyReply) => {
+  const { transcript } = req.body;
+
+  if (!transcript) {
+    return reply.status(400).send({ error: 'Missing "transcript" in request body.' });
+  }
+
+  try {
+    // Use structured outputs for analysis
+    const completion = await openai.beta.chat.completions.parse({
+      model: 'gpt-4o-2024-08-06',
+      messages: [
+        { role: 'system', content: 'You are an assistant that analyzes call transcripts and an expert at structured data extraction. You will be given unstructured transcript from a customer service call and should convert it into the given structure. When converting, talk from the perspective of the assistant.' },
+        {
+          role: 'user',
+          content: `Analyze the following transcript. Provide the sentiment of the customer throughout the call in one word (positive, neutral, negative), a brief summary of the call with the next steps the business should take with respect to this customer and call topic, and one short but relevant tag describing the call in less than 3 words ("needs follow up", "interested in blank", etc). If the customer indicated that they wanted to speak with a human, your flag for this call should simply be "Needs Review":\n\n"${transcript}"`,
+        },
+      ],
+      response_format: zodResponseFormat(CallAnalysisSchema, "call_analysis"),
+    });
+
+    const analysis = completion.choices[0]?.message.parsed;
+
+    if (!analysis) {
+      return reply.status(500).send({ error: 'Failed to parse the analysis result.' });
+    }
+
+    return reply.status(200).send(analysis);
+  } catch (error) {
+    console.error('Error analyzing transcript:', error);
+    return reply.status(500).send({ error: 'Internal server error', details: error.message });
+  }
+});
+
+fastify.post('/api/business-signup', async (req: FastifyRequest, reply: FastifyReply) => {
+  const { name, phone, location, description, hours, employees } = req.body;
+
+  try {
+    const business = await prisma.business.create({
+      data: {
+        name,
+        phone,
+        location,
+        description,
+        hours: {
+          createMany: {
+            data: hours.map((hour) => ({
+              dayOfWeek: hour.dayOfWeek,
+              openTime: hour.openTime,
+              closeTime: hour.closeTime,
+            })),
+          },
+        },
+        employees: {
+          createMany: {
+            data: employees.map((employee) => ({
+              name: employee.name,
+              role: employee.role,
+            })),
+          },
+        },
+      },
+      include: {
+        hours: true,
+        employees: true,
+      },
+    });
+
+    // Create employee hours
+    for (const [index, employee] of employees.entries()) {
+      await prisma.hours.createMany({
+        data: employee.hours.map((hour) => ({
+          dayOfWeek: hour.dayOfWeek,
+          openTime: hour.openTime,
+          closeTime: hour.closeTime,
+          employeeId: business.employees[index].id,
+        })),
+      });
+    }
+
+    return reply.status(201).send(business);
+  } catch (error) {
+    console.error('Error creating business:', error);
+    return reply.status(500).send({ error: 'Internal server error' });
+  }
+});
+
+fastify.get('/api/business-info', async (req: FastifyRequest<{ Querystring: { name: string } }>, reply: FastifyReply) => {
+  const { name } = req.query;
+
+  if (!name) {
+    return reply.status(400).send({ error: 'Business name is required.' });
+  }
+
+  try {
+    // Query the database for the business and its related information
+    const business = await prisma.business.findFirst({
+      where: { name },
+      include: {
+        hours: true,
+        employees: {
+          include: {
+            hours: true, // Include employee-specific hours
+          },
+        },
+        customers: true, // Include related customers
+      },
+    });
+
+    if (!business) {
+      return reply.status(404).send({ error: 'Business not found.' });
+    }
+
+    return reply.status(200).send(business);
+  } catch (error) {
+    console.error('Error fetching business info:', error);
+    return reply.status(500).send({ error: 'Internal server error.' });
+  }
+});
+
+fastify.get('/api/business-names', async (req, reply) => {
+  try {
+    const businesses = await prisma.business.findMany({
+      select: { name: true }, // Only fetch business names
+    });
+
+    return reply.status(200).send(businesses);
+  } catch (error) {
+    console.error("Error fetching business names:", error);
+    return reply.status(500).send({ error: "Internal server error." });
+  }
+});
+
+fastify.post('/api/add-customer', async (req, reply) => {
+  const { name, phone, businessId } = req.body;
+
+  if (!name || !phone || !businessId) {
+    return reply.status(400).send({ error: "Missing required fields." });
+  }
+
+  try {
+    // Add the customer to the database
+    const customer = await prisma.customer.create({
+      data: {
+        name,
+        phone,
+        businessId,
+      },
+    });
+
+    // Fetch the updated business with customers
+    const updatedBusiness = await prisma.business.findUnique({
+      where: { id: businessId },
+      include: {
+        hours: true,
+        employees: { include: { hours: true } },
+        customers: true,
+      },
+    });
+
+    return reply.status(200).send(updatedBusiness);
+  } catch (error) {
+    console.error('Error adding customer:', error);
+    return reply.status(500).send({ error: 'Internal server error.' });
+  }
+});
+
+
+fastify.post('/api/add-intent', async (req: FastifyRequest<{ Body: { 
+  businessName: string, 
+  name: string,
+  greetingMessage: string, 
+  conversationTopic: string, 
+  endingMessage: string, 
+  questions: string[], 
+  businessInfo: string 
+} }>, reply: FastifyReply) => {
+  const { businessName, name, greetingMessage, conversationTopic, endingMessage, questions, businessInfo } = req.body;
+
+  if (!businessName || !name || !greetingMessage || !conversationTopic || !endingMessage || !questions || !businessInfo) {
+    return reply.status(400).send({ error: "Missing required fields." });
+  }
+
+  try {
+    // Find the business by name
+    const business = await prisma.business.findUnique({
+      where: { name: businessName },
+    });
+
+    if (!business) {
+      return reply.status(404).send({ error: "Business not found." });
+    }
+
+    // Create the intent
+    const intent = await prisma.intent.create({
+      data: {
+        name, // Include the name field
+        greetingMessage,
+        conversationTopic,
+        endingMessage,
+        questions,
+        businessInfo,
+        businessId: business.id,
+      },
+    });
+
+    return reply.status(201).send(intent);
+  } catch (error) {
+    console.error("Error creating intent:", error);
+    return reply.status(500).send({ error: "Internal server error." });
+  }
+});
+
+/**
+ * GET /api/get-intents
+ * Retrieve all intents associated with a business name
+ */
+fastify.get('/api/get-intents', async (req: FastifyRequest<{ Querystring: { businessName: string } }>, reply: FastifyReply) => {
+  const { businessName } = req.query;
+
+  if (!businessName) {
+    return reply.status(400).send({ error: "Business name is required." });
+  }
+
+  try {
+    // Find the business by name
+    const business = await prisma.business.findUnique({
+      where: { name: businessName },
+      include: {
+        intents: true, // Include intents in the response
+      },
+    });
+
+    if (!business) {
+      return reply.status(404).send({ error: "Business not found." });
+    }
+
+    return reply.status(200).send(business.intents);
+  } catch (error) {
+    console.error("Error retrieving intents:", error);
+    return reply.status(500).send({ error: "Internal server error." });
+  }
+});
+
+fastify.post("/api/add-call-log", async (req, reply) => {
+  const { name, phone, intentName, status, businessId } = req.body;
+
+  try {
+    const callLog = await prisma.callLog.create({
+      data: {
+        name,
+        phoneNumber: phone,
+        intentName,
+        status,
+        businessId,
+      },
+    });
+
+    return reply.status(201).send(callLog);
+  } catch (error) {
+    console.error("Error adding call log:", error);
+    return reply.status(500).send({ error: "Internal server error" });
+  }
+});
+
+fastify.get('/api/call-status', async (req: FastifyRequest<{ Querystring: { callSid: string } }>, reply: FastifyReply) => {
+  const { callSid } = req.query;
+
+  try {
+    const call = callsData.get(callSid);
+    if (!call) {
+      return reply.status(404).send({ error: "Call not found" });
+    }
+
+    // Get current call log status from database
+    const callLog = await prisma.callLog.findUnique({
+      where: { id: call.callLogId }
+    });
+
+    return reply.status(200).send({
+      isComplete: callLog?.status === "completed",
+      transcript: call.transcript || "",
+      callLogId: call.callLogId,
+      status: callLog?.status
+    });
+  } catch (error) {
+    console.error("Error checking call status:", error);
+    return reply.status(500).send({ error: "Internal server error" });
+  }
+});
+
+fastify.put("/api/update-call-log/:id", async (req, reply) => {
+  const { id } = req.params;
+  const { status, transcript, sentiment, summary, flag } = req.body;
+
+  try {
+    const updatedCallLog = await prisma.callLog.update({
+      where: { id: parseInt(id, 10) },
+      data: {
+        status,
+        transcript,
+        sentiment,
+        summary,
+        flag,
+      },
+    });
+
+    return reply.status(200).send(updatedCallLog);
+  } catch (error) {
+    console.error("Error updating call log:", error);
+    return reply.status(500).send({ error: "Internal server error" });
+  }
+});
+
+fastify.get("/api/get-call-logs", async (req, reply) => {
+  try {
+    const logs = await prisma.callLog.findMany();
+    console.log("Fetched call logs:", logs);
+    return reply.status(200).send(logs);
+  } catch (error) {
+    console.error("Error fetching call logs:", error);
+    return reply.status(500).send({ error: "Internal server error." });
+  }
+});
+
+fastify.get("/api/get-intent-info", async (req, reply) => {
+  const { intentName } = req.query;
+
+  try {
+    const intent = await prisma.intent.findUnique({
+      where: { name: intentName },
+    });
+
+    if (!intent) {
+      return reply.status(404).send({ error: "Intent not found" });
+    }
+
+    return reply.status(200).send(intent);
+  } catch (error) {
+    console.error("Error fetching intent info:", error);
+    return reply.status(500).send({ error: "Internal server error" });
+  }
+});
+
+
+
+  fastify.get('/api/test', async (req, reply) => {
+    return reply.status(200).send({ message: 'Hello, world! The server is running.' });
   });
 
   // Next.js routes

@@ -1,0 +1,79 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+model Business {
+  id          Int       @id @default(autoincrement())
+  name        String    @unique
+  phone       String
+  location    String
+  description String
+  hours       Hours[]
+  employees   Employee[]
+  customers   Customer[]
+  intents     Intent[]
+  callLogs    CallLog[]
+}
+
+
+model Intent {
+  id                Int      @id @default(autoincrement())
+  name              String   @unique
+  greetingMessage   String
+  conversationTopic String
+  endingMessage     String
+  questions         String[] // Array of strings
+  businessInfo      String
+  businessId        Int
+  business          Business @relation(fields: [businessId], references: [id])
+}
+
+model Employee {
+  id         Int      @id @default(autoincrement())
+  name       String
+  role       String
+  hours      Hours[]
+  businessId Int
+  business   Business @relation(fields: [businessId], references: [id])
+}
+
+model Customer {
+  id         Int      @id @default(autoincrement())
+  name       String
+  phone      String
+  businessId Int
+  business   Business @relation(fields: [businessId], references: [id])
+}
+
+model Hours {
+  id          Int      @id @default(autoincrement())
+  dayOfWeek   String
+  openTime    String
+  closeTime   String
+  businessId  Int?
+  business    Business? @relation(fields: [businessId], references: [id])
+  employeeId  Int?
+  employee    Employee? @relation(fields: [employeeId], references: [id])
+}
+
+model CallLog {
+  id          Int      @id @default(autoincrement())
+  createdAt   DateTime @default(now())
+  name        String
+  phoneNumber String
+  intentName  String
+  status      String
+  sentiment   String?
+  summary     String?
+  flag        String?
+  transcript  String?
+  startTime   DateTime?
+  endTime     DateTime?
+  businessId  Int
+  business    Business @relation(fields: [businessId], references: [id])
+}

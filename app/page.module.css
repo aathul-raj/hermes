@@ -1,0 +1,105 @@
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 1rem;
+  margin-left: 3rem;
+  margin-top: 3rem;
+  position: absolute;
+}
+
+.header h1 {
+  font-size: 1.5rem;
+  font-weight: normal;
+}
+
+.hero {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  height: 90vh;
+  transform: translateY(3rem);
+  gap: 2rem;
+}
+
+.heroText {
+  display: flex;
+  font-size: 1.2rem;
+  align-items: center;
+  flex-direction: column;
+  justify-content: center;
+}
+
+.heroText h1.intelligent {
+  background-color: #defd7d;
+  padding: 0.5rem 2rem;
+  border-radius: 10rem;
+  border: 1px solid black;
+  transform: rotate(-5deg);
+  margin: 1rem 0;
+}
+
+.hero h2 {
+  font-size: 1.1rem;
+  font-weight: normal;
+}
+
+.devpost {
+  position: absolute;
+  bottom: 8rem;
+  left: 3rem;
+  display: flex;
+  background-color: #f4f4f4;
+  width: fit-content;
+  padding: 0.8rem 2rem;
+  border-radius: 5rem;
+}
+
+.devpost img {
+  width: 2rem;
+  height: 2rem;
+  align-self: center;
+}
+
+.devpostText {
+  margin: 0 1rem;
+}
+
+.devpostText h2 {
+  font-size: 0.9rem;
+  font-weight: normal;
+}
+
+.devpostText h1 {
+  font-size: 1.2rem;
+  font-weight: normal;
+}
+
+.athul {
+  position: absolute;
+  bottom: 1.2rem;
+  left: 3rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background-color: black;
+  color: white;
+  width: fit-content;
+  padding:.8rem 2rem;
+  border-radius: 5rem;
+  position: relative;
+}
+
+.athul h1 {
+  font-size: 1.2rem;
+  font-weight: normal;
+  margin: 0 .8rem;
+}
+
+.athul .yellowCircle {
+  width: 1.5rem;
+  height: 1.5rem;
+  background-color: yellow;
+  border-radius: 50%;
+}

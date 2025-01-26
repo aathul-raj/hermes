@@ -1,0 +1,109 @@
+.button {
+    display: inline-flex;
+    align-items: center;
+    background: none;
+    border: none;
+    cursor: pointer;
+    position: relative;
+    color: white;
+    font-size: 1.4rem;
+    font-weight: 400;
+    padding: 0;
+    gap: 1rem;
+}
+
+.labelContainer {
+    position: relative;
+    display: inline-block;
+    overflow: hidden;
+    white-space: nowrap;
+    padding-bottom: .3em;
+}
+
+.label {
+    position: relative;
+    z-index: 2;
+    color: black;
+}
+
+.underlinePrimary, .underlineSecondary {
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    height: 1px;
+    width: 100%;
+    background: white;
+}
+
+.underlinePrimary {
+    transform: translateX(0%);
+}
+
+.underlineSecondary {
+    transform: translateX(-100%);
+}
+
+.arrowContainer {
+    position: relative;
+    display: inline-block;
+    width: 40px;
+    height: 40px;
+    overflow: hidden;
+}
+
+.circle {
+    position: relative;
+    width: 40px;
+    height: 40px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.circleBlackBg {
+    background: black;
+}
+
+.circleWhiteBg {
+    background: white;
+}
+
+.arrowPrimary, .arrowSecondary {
+    position: absolute;
+    top: 20%;
+    left: 25%;
+    transform: translate(-50%, -50%);
+    z-index: 2;
+}
+
+.arrowWhite {
+    color: white;
+}
+
+.arrowBlack {
+    color: black;
+}
+
+@media (max-width: 768px){
+    .button{
+        font-size: 1rem;
+        gap: .75rem;
+    }
+
+    .circle{
+        width: 30px;
+        height: 30px;
+    }
+
+    .arrowContainer{
+        width: 30px;
+        height: 30px;
+    }
+
+    .arrowPrimary, .arrowSecondary {
+        top: 20%;
+        left: 25%;
+        transform: translate(-50%, -50%);
+    }
+}

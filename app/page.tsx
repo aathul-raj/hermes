@@ -1,129 +1,56 @@
-"use client"
-import React, { useState } from 'react';
+import Image from 'next/image';
+import Logo from '../public/logo.svg';
+import styles from './page.module.css';
+import Button from './button';
 
-export default function Home() {
-  const [toPhone, setToPhone] = useState('');
-  const [greeting, setGreeting] = useState('Hello! This is Athul from ACME!');
-  const [topic, setTopic] = useState('Discussing our new product launch');
-  const [ending, setEnding] = useState('Thank you and have a great day!');
-  const [questions, setQuestions] = useState(['Are you interested?', 'Any feedback for us?'].join('\n'));
-  const [businessInfo, setBusinessInfo] = useState('ACME Inc, specialized in roadrunner devices.');
-
-  const [callSid, setCallSid] = useState<string>('');
-  const [summary, setSummary] = useState<string>('');
-  const [isComplete, setIsComplete] = useState(false);
-
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-
-    // Prepare the questions as an array
-    const qsArray = questions.split('\n').map(q => q.trim()).filter(Boolean);
-
-    const res = await fetch('/api/outbound-call', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        toPhone,
-        greeting,
-        topic,
-        ending,
-        questions: qsArray,
-        businessInfo
-      }),
-    });
-
-    const data = await res.json();
-    if (data.callSid) {
-      setCallSid(data.callSid);
-      alert(`Call initiated! SID: ${data.callSid}`);
-      setSummary('');
-      setIsComplete(false);
-    } else {
-      alert(`Error: ${data.error || 'Unknown error'}`);
-    }
-  };
-
-  const handleCheckSummary = async () => {
-    if (!callSid) return;
-    const res = await fetch(`/api/call-summary?callSid=${callSid}`);
-    const data = await res.json();
-    if (data.error) {
-      alert(`Error: ${data.error}`);
-      return;
-    }
-    setSummary(data.summary || '');
-    setIsComplete(data.isComplete || false);
-  };
-
+export default function Page() {
   return (
-    <div style={{ maxWidth: 600, margin: '0 auto', padding: 20 }}>
-      <h1>AI Outbound Call Demo</h1>
-      <form onSubmit={handleSubmit}>
-        <label>Phone Number to Call (E.164):</label>
-        <input
-          type="text"
-          placeholder="+12223334444"
-          value={toPhone}
-          onChange={(e) => setToPhone(e.target.value)}
-          style={{ width: '100%', marginBottom: 10 }}
-          required
-        />
+    <main>
+      <div className={styles.header}>
+        <Image src={Logo} alt="Logo" />
+        <h1>HERMES</h1>
+      </div>
 
-        <label>Greeting:</label>
-        <input
-          type="text"
-          value={greeting}
-          onChange={(e) => setGreeting(e.target.value)}
-          style={{ width: '100%', marginBottom: 10 }}
-        />
-
-        <label>Topic:</label>
-        <input
-          type="text"
-          value={topic}
-          onChange={(e) => setTopic(e.target.value)}
-          style={{ width: '100%', marginBottom: 10 }}
-        />
-
-        <label>Ending:</label>
-        <input
-          type="text"
-          value={ending}
-          onChange={(e) => setEnding(e.target.value)}
-          style={{ width: '100%', marginBottom: 10 }}
-        />
-
-        <label>Questions (one per line):</label>
-        <textarea
-          value={questions}
-          onChange={(e) => setQuestions(e.target.value)}
-          style={{ width: '100%', marginBottom: 10, height: 70 }}
-        />
-
-        <label>Business Info:</label>
-        <input
-          type="text"
-          value={businessInfo}
-          onChange={(e) => setBusinessInfo(e.target.value)}
-          style={{ width: '100%', marginBottom: 10 }}
-        />
-
-        <button type="submit">Make Outbound AI Call</button>
-      </form>
-
-      {callSid && (
-        <div style={{ marginTop: 30 }}>
-          <p>Call SID: {callSid}</p>
-          <button onClick={handleCheckSummary}>Check for Summary</button>
-          <p>Call Complete? {isComplete ? 'Yes' : 'No'}</p>
-          {summary && (
-            <div>
-              <h3>Conversation Summary</h3>
-              <pre>{summary}</pre>
-            </div>
-          )}
+      <div className={styles.hero}>
+        <div className={styles.heroText}>
+          <h1>BUILD</h1>
+          <h1 className={styles.intelligent}>INTELLIGENT</h1>
+          <h1>CUSTOMER SERVICE CHATBOTS</h1>
         </div>
-      )}
-    </div>
+        <h2>Revolutionize your customer support with our AI helpers.</h2>
+        <Button
+  text="Get Started"
+  link="/new-business"
+  arrowWhite={true}
+/>
+      </div>
+
+      <div className={styles.devpost}>
+        <Image src={Logo} alt="Logo" />
+
+        <div className={styles.devpostText}>
+          <h2>01.26.25</h2>
+          <h1>SEE PROJECT</h1>
+        </div>
+
+        <Button
+  link="https://example.com"
+  arrowOnly={true}
+  arrowWhite={true}
+  target='_blank'
+/>
+      </div>
+
+      <div className={styles.athul}>
+        <div className={styles.yellowCircle}></div>
+        <h1>ATHUL SURESH</h1>
+        <Button
+  link="https://www.athuls.com/"
+  arrowOnly={true}
+  arrowWhite={false}
+  target='_blank'
+/>
+      </div>
+    </main>
   );
 }
