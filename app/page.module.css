@@ -103,3 +103,54 @@
   background-color: yellow;
   border-radius: 50%;
 }
+
+/* Floating text (INTELLIGENT) */
+.heroText h1.intelligent {
+  background-color: #defd7d;
+  padding: 0.5rem 2rem;
+  border-radius: 10rem;
+  border: 1px solid black;
+  transform-origin: center; /* Rotate around its center */
+  margin: 1rem 0;
+}
+.plusContainer {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none; /* Non-interactable */
+  overflow: hidden; /* Prevent SVGs from visibly overflowing */
+}
+
+.plusSign {
+  position: absolute;
+  width: 24px;
+  height: 24px;
+}
+
+/* Spread out the plus signs more */
+.plusSign:nth-child(1) {
+  top: 30%;  /* Moved higher */
+  left: 10%; /* Further left */
+}
+
+.plusSign:nth-child(2) {
+  top: 25%; /* Moved down */
+  left: 60%; /* Far right */
+}
+
+.plusSign:nth-child(3) {
+  top: 85%; /* Center-ish */
+  left: 80%; /* Far right */
+}
+
+.plusSign:nth-child(4) {
+  top: 70%; /* Lower part */
+  left: 30%; /* Left-ish */
+}
+
+.plusSign:nth-child(5) {
+  top: 90%; /* Near bottom */
+  left: 5%;  /* Very far left */
+}
